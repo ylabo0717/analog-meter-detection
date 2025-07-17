@@ -79,15 +79,6 @@ This document contains critical information about working with this codebase. Fo
      - Type narrowing for strings
      - Version warnings can be ignored if checks pass
 
-3. Pre-commit
-   - Config: `.pre-commit-config.yaml`
-   - Runs: on git commit
-   - Tools: Prettier (YAML/JSON), Ruff (Python)
-   - Ruff updates:
-     - Check PyPI versions
-     - Update config rev
-     - Commit config first
-
 ## Error Resolution
 
 1. CI Failures
