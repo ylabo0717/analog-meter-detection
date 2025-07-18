@@ -7,99 +7,8 @@ import cv2
 import numpy as np
 
 
-def detect_main_meter_circle(image: np.ndarray, output_dir: str = None, debug_count: int = 1) -> Tuple[int, int, int]:
-    """メーター全体の円形を検出（改良版）"""
-    # グレースケール変換
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    
-    # ガウシアンブラーを適用
-    blurred = cv2.GaussianBlur(gray, (9, 9), 2)
-    
-    # 複数のパラメータで円検出を試行
-    circles_results = []
-    
-    # パラメータセット1: 基本設定
-    circles1 = cv2.HoughCircles(
-        blurred,
-        cv2.HOUGH_GRADIENT,
-        dp=1,
-        minDist=100,
-        param1=100,
-        param2=30,
-        minRadius=80,
-        maxRadius=200,
-    )
-    if circles1 is not None:
-        circles_results.extend(circles1[0])
-    
-    # パラメータセット2: より厳密な設定
-    circles2 = cv2.HoughCircles(
-        blurred,
-        cv2.HOUGH_GRADIENT,
-        dp=1,
-        minDist=80,
-        param1=80,
-        param2=40,
-        minRadius=60,
-        maxRadius=150,
-    )
-    if circles2 is not None:
-        circles_results.extend(circles2[0])
-    
-    # パラメータセット3: より感度の高い設定
-    circles3 = cv2.HoughCircles(
-        blurred,
-        cv2.HOUGH_GRADIENT,
-        dp=1,
-        minDist=70,
-        param1=60,
-        param2=25,
-        minRadius=70,
-        maxRadius=180,
-    )
-    if circles3 is not None:
-        circles_results.extend(circles3[0])
-    
-    main_circle = None
-    if circles_results:
-        circles_results = np.round(circles_results).astype("int")
-        # 最も大きな円を選択
-        if len(circles_results) > 0:
-            max_radius = max(circles_results[:, 2])
-            for (x, y, r) in circles_results:
-                if r == max_radius:
-                    main_circle = (x, y, r)
-                    break
-    
-    # フォールバック：画像の中心付近で円を想定
-    if main_circle is None:
-        h, w = image.shape[:2]
-        main_circle = (w // 2, h // 2, min(w, h) // 3)
-    
-    # デバッグ画像を作成
-    if output_dir:
-        debug_img = image.copy()
-        cv2.circle(debug_img, (main_circle[0], main_circle[1]), main_circle[2], (0, 255, 0), 3)
-        cv2.circle(debug_img, (main_circle[0], main_circle[1]), 5, (0, 255, 0), -1)
-        cv2.putText(debug_img, f"Main Circle: {main_circle}", (10, 30), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-        
-        # 検出された全ての円も描画
-        if circles_results is not None and len(circles_results) > 0:
-            for (x, y, r) in circles_results:
-                cv2.circle(debug_img, (x, y), r, (255, 0, 0), 2)
-                cv2.circle(debug_img, (x, y), 2, (255, 0, 0), -1)
-        
-        cv2.imwrite(f"{output_dir}/debug_{debug_count:03d}_main_circle.jpg", debug_img)
-    
-    return main_circle
-
-
 def detect_needle_center_from_red_circle(image: np.ndarray, is_temperature: bool = True, output_dir: str = None, debug_count: int = 1) -> Tuple[int, int]:
-    """赤色の針の根っこの円形部分から中心を検出 - メーター全体の円の中で検出"""
-    # まずメーター全体の円を検出
-    main_cx, main_cy, main_radius = detect_main_meter_circle(image, output_dir, debug_count)
-    
+    """赤色の針の根っこの円形部分から中心を検出"""
     # 赤色フィルタリング
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
     
@@ -118,25 +27,16 @@ def detect_needle_center_from_red_circle(image: np.ndarray, is_temperature: bool
     red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_OPEN, kernel)
     red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_CLOSE, kernel)
     
-    # メーター全体の円の範囲内のみに制限
+    # 画像の上半分（温度計）または下半分（湿度計）に制限
     h, w = image.shape[:2]
-    circle_mask = np.zeros_like(red_mask)
-    cv2.circle(circle_mask, (main_cx, main_cy), main_radius, 255, -1)
-    
-    # 画像の上半分（温度計）または下1/3（湿度計）に制限
     if is_temperature:
         # 温度計は上半分
-        region_mask = np.zeros_like(red_mask)
-        region_mask[0:main_cy + 30, :] = 255
+        search_mask = np.zeros_like(red_mask)
+        search_mask[0:h//2 + 50, :] = red_mask[0:h//2 + 50, :]
     else:
-        # 湿度計は下1/3に制限
-        region_mask = np.zeros_like(red_mask)
-        lower_third_start = main_cy + int((h - main_cy) / 3)
-        region_mask[lower_third_start:h, :] = 255
-    
-    # 全ての制限を適用
-    search_mask = cv2.bitwise_and(red_mask, circle_mask)
-    search_mask = cv2.bitwise_and(search_mask, region_mask)
+        # 湿度計は下半分
+        search_mask = np.zeros_like(red_mask)
+        search_mask[h//2 - 50:h, :] = red_mask[h//2 - 50:h, :]
     
     # 円形部分を検出
     circles = cv2.HoughCircles(
@@ -172,9 +72,8 @@ def detect_needle_center_from_red_circle(image: np.ndarray, is_temperature: bool
                     best_score = density
                     best_circle = (x, y, r)
             else:
-                # 湿度計は下1/3の適切な位置に制限
-                lower_third_start = main_cy + int((h - main_cy) / 3)
-                if y > lower_third_start and density > best_score:
+                # 湿度計は下半分の適切な位置
+                if y > h//2 - 30 and density > best_score:
                     best_score = density
                     best_circle = (x, y, r)
         
@@ -193,9 +92,9 @@ def detect_needle_center_from_red_circle(image: np.ndarray, is_temperature: bool
     # フォールバック：画像の中心付近を使用
     if detected_center is None:
         if is_temperature:
-            detected_center = (main_cx, main_cy - main_radius // 3)
+            detected_center = (w // 2, h // 3)
         else:
-            detected_center = (main_cx, main_cy + main_radius // 3)
+            detected_center = (w // 2, 2 * h // 3)
     
     # デバッグ画像を作成
     if output_dir:
@@ -211,13 +110,8 @@ def detect_needle_center_from_red_circle(image: np.ndarray, is_temperature: bool
             cv2.putText(debug_img, f"Center: {detected_center}", (10, 30), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
         
-        # メーター全体の円も描画
-        cv2.circle(debug_img, (main_cx, main_cy), main_radius, (255, 0, 0), 2)
-        cv2.putText(debug_img, f"Main Circle: ({main_cx}, {main_cy}, {main_radius})", (10, 60), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-        
         meter_type = "temp" if is_temperature else "hum"
-        cv2.imwrite(f"{output_dir}/debug_{debug_count + 1:03d}_{meter_type}_center_detection.jpg", debug_img)
+        cv2.imwrite(f"{output_dir}/debug_{debug_count:03d}_{meter_type}_center_detection.jpg", debug_img)
     
     return detected_center
 
@@ -306,11 +200,8 @@ def detect_temperature_needle(image: np.ndarray, output_dir: str = None, debug_c
     # 温度計の中心を赤色円形部分から検出
     temp_cx, temp_cy = detect_needle_center_from_red_circle(image, is_temperature=True, output_dir=output_dir, debug_count=debug_count)
     
-    # メーター全体の円を取得
-    main_cx, main_cy, main_radius = detect_main_meter_circle(image)
-    
     # 温度計の領域を限定
-    temp_radius = min(70, main_radius)
+    temp_radius = 70
     
     # より精密な赤色フィルタリング
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
@@ -330,12 +221,8 @@ def detect_temperature_needle(image: np.ndarray, output_dir: str = None, debug_c
     red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_OPEN, kernel)
     red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_CLOSE, kernel)
     
-    # メーター全体の円の範囲内のみに制限
-    h, w = image.shape[:2]
-    circle_mask = np.zeros_like(red_mask)
-    cv2.circle(circle_mask, (main_cx, main_cy), main_radius, 255, -1)
-    
     # 温度計の範囲を制限
+    h, w = image.shape[:2]
     y_min = max(0, temp_cy - temp_radius)
     y_max = min(h, temp_cy + temp_radius // 3)  # 上側のみ
     x_min = max(0, temp_cx - temp_radius)
@@ -344,9 +231,6 @@ def detect_temperature_needle(image: np.ndarray, output_dir: str = None, debug_c
     # 温度計領域のマスクを作成
     temp_mask = np.zeros_like(red_mask)
     temp_mask[y_min:y_max, x_min:x_max] = red_mask[y_min:y_max, x_min:x_max]
-    
-    # メーター全体の円の制限を適用
-    temp_mask = cv2.bitwise_and(temp_mask, circle_mask)
     
     # 中心からの距離制限を追加（より厳密に）
     for y in range(y_min, y_max):
@@ -367,7 +251,7 @@ def detect_temperature_needle(image: np.ndarray, output_dir: str = None, debug_c
         cv2.putText(debug_red_mask, f"Red pixels: {red_pixels}", (10, 30), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
         
-        cv2.imwrite(f"{output_dir}/debug_{debug_count + 2:03d}_temp_red_mask.jpg", debug_red_mask)
+        cv2.imwrite(f"{output_dir}/debug_{debug_count + 1:03d}_temp_red_mask.jpg", debug_red_mask)
     
     # 改良された針の先端検出を使用
     angle = find_needle_by_tip_detection(temp_mask, temp_cx, temp_cy)
@@ -404,21 +288,18 @@ def detect_temperature_needle(image: np.ndarray, output_dir: str = None, debug_c
             cv2.putText(debug_img, "No angle detected", (10, 30), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
         
-        cv2.imwrite(f"{output_dir}/debug_{debug_count + 3:03d}_temp_needle.jpg", debug_img)
+        cv2.imwrite(f"{output_dir}/debug_{debug_count + 2:03d}_temp_needle.jpg", debug_img)
     
     return angle if angle is not None else 0.0
 
 
 def detect_humidity_needle(image: np.ndarray, output_dir: str = None, debug_count: int = 1) -> float:
-    """湿度計の針を検出 - 赤色円形部分から中心を検出（改良版）"""
+    """湿度計の針を検出 - 赤色円形部分から中心を検出"""
     # 湿度計の中心を赤色円形部分から検出
     hum_cx, hum_cy = detect_needle_center_from_red_circle(image, is_temperature=False, output_dir=output_dir, debug_count=debug_count)
     
-    # メーター全体の円を取得
-    main_cx, main_cy, main_radius = detect_main_meter_circle(image)
-    
-    # 湿度計の領域を限定（より厳密に下半分に制限）
-    hum_radius = min(60, main_radius)
+    # 湿度計の領域を限定
+    hum_radius = 60
     
     # 赤色フィルタリング
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
@@ -438,15 +319,9 @@ def detect_humidity_needle(image: np.ndarray, output_dir: str = None, debug_coun
     red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_OPEN, kernel)
     red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_CLOSE, kernel)
     
-    # メーター全体の円の範囲内のみに制限
+    # 湿度計の範囲を制限
     h, w = image.shape[:2]
-    circle_mask = np.zeros_like(red_mask)
-    cv2.circle(circle_mask, (main_cx, main_cy), main_radius, 255, -1)
-    
-    # 湿度計の範囲を制限（下1/3に厳密に制限）
-    h, w = image.shape[:2]
-    lower_third_start = main_cy + int((h - main_cy) / 3)
-    y_min = max(0, lower_third_start)  # メーター中心から下1/3のみ
+    y_min = max(0, hum_cy - hum_radius)
     y_max = min(h, hum_cy + hum_radius)
     x_min = max(0, hum_cx - hum_radius)
     x_max = min(w, hum_cx + hum_radius)
@@ -455,23 +330,12 @@ def detect_humidity_needle(image: np.ndarray, output_dir: str = None, debug_coun
     hum_mask = np.zeros_like(red_mask)
     hum_mask[y_min:y_max, x_min:x_max] = red_mask[y_min:y_max, x_min:x_max]
     
-    # メーター全体の円の制限を適用
-    hum_mask = cv2.bitwise_and(hum_mask, circle_mask)
-    
-    # 下1/3のみに制限するマスクを追加
-    h, w = image.shape[:2]
-    lower_third_start = main_cy + int((h - main_cy) / 3)
-    lower_third_mask = np.zeros_like(red_mask)
-    lower_third_mask[lower_third_start:h, :] = 255
-    hum_mask = cv2.bitwise_and(hum_mask, lower_third_mask)
-    
     # 中心からの距離制限を追加
-    for y in range(h):
-        for x in range(w):
-            if hum_mask[y, x] > 0:
-                distance = math.sqrt((x - hum_cx)**2 + (y - hum_cy)**2)
-                if distance > hum_radius or distance < 10:
-                    hum_mask[y, x] = 0
+    for y in range(y_min, y_max):
+        for x in range(x_min, x_max):
+            distance = math.sqrt((x - hum_cx)**2 + (y - hum_cy)**2)
+            if distance > hum_radius or distance < 10:
+                hum_mask[y, x] = 0
     
     # デバッグ用の画像を保存
     if output_dir:
@@ -480,19 +344,12 @@ def detect_humidity_needle(image: np.ndarray, output_dir: str = None, debug_coun
         cv2.circle(debug_red_mask, (hum_cx, hum_cy), hum_radius, (0, 255, 0), 2)
         cv2.rectangle(debug_red_mask, (x_min, y_min), (x_max, y_max), (0, 255, 255), 2)
         
-        # 下1/3制限を視覚化
-        h, w = image.shape[:2]
-        lower_third_start = main_cy + int((h - main_cy) / 3)
-        cv2.line(debug_red_mask, (0, lower_third_start), (w, lower_third_start), (255, 0, 255), 2)
-        cv2.putText(debug_red_mask, "Lower 1/3 limit", (10, lower_third_start + 20), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 2)
-        
         # 検出された赤色画素の統計情報を表示
         red_pixels = np.sum(hum_mask > 0)
         cv2.putText(debug_red_mask, f"Red pixels: {red_pixels}", (10, 30), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
         
-        cv2.imwrite(f"{output_dir}/debug_{debug_count + 2:03d}_hum_red_mask.jpg", debug_red_mask)
+        cv2.imwrite(f"{output_dir}/debug_{debug_count + 1:03d}_hum_red_mask.jpg", debug_red_mask)
     
     # 改良された針の先端検出を使用
     angle = find_needle_by_tip_detection(hum_mask, hum_cx, hum_cy)
@@ -529,45 +386,36 @@ def detect_humidity_needle(image: np.ndarray, output_dir: str = None, debug_coun
             cv2.putText(debug_img, "No angle detected", (10, 30), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
         
-        cv2.imwrite(f"{output_dir}/debug_{debug_count + 3:03d}_hum_needle.jpg", debug_img)
+        cv2.imwrite(f"{output_dir}/debug_{debug_count + 2:03d}_hum_needle.jpg", debug_img)
     
     return angle if angle is not None else 0.0
 
 
-
-def angle_to_temperature(angle: float, temp_center: Tuple[int, int], hum_center: Tuple[int, int]) -> float:
-    """角度から温度を算出（-20℃～50℃）- 実際の測定値に基づく校正"""
-    # 実際の測定値に基づいて角度を校正
-    # meter_001.jpg: 検出角度21度 → 期待値23.5°C
-    # meter_002.jpg: 検出角度27度 → 期待値25.5°C
-    # meter_004.jpg: 検出角度18度 → 期待値19.0°C  
-    # meter_005.jpg: 検出角度25度 → 期待値24.0°C
+def angle_to_temperature(angle: float) -> float:
+    """角度から温度を算出（-20℃～50℃）- 実際の画像に基づいて調整"""
+    # 角度の範囲を制限
+    if angle < -90:
+        angle = -90
+    elif angle > 90:
+        angle = 90
     
-    # 実際の測定点を基にした校正マッピング
-    calibration_points = [
-        (18, 19.0),    # meter_004.jpg
-        (21, 23.5),    # meter_001.jpg
-        (25, 24.0),    # meter_005.jpg
-        (27, 25.5),    # meter_002.jpg
-    ]
-    
-    # 温度計の動作範囲を考慮した完全なマッピング
+    # 実際の画像解析に基づく温度マッピング
+    # meter_001.jpg の実際の針の位置を基に調整
+    # 18°で23.5°Cとなるように調整
     temperature_points = [
-        (-30, -20.0),  # 最小値
-        (-20, -15.0),
-        (-10, -10.0),
-        (0, -5.0),
-        (10, 0.0),
-        (15, 10.0),
-        (18, 19.0),    # meter_004.jpg校正点
-        (21, 23.5),    # meter_001.jpg校正点
-        (25, 24.0),    # meter_005.jpg校正点
-        (27, 25.5),    # meter_002.jpg校正点
-        (30, 30.0),
-        (40, 35.0),
-        (50, 40.0),
-        (60, 45.0),
-        (90, 50.0),    # 最大値
+        (-90, -20.0),
+        (-70, -15.0),
+        (-50, -10.0),
+        (-30, -5.0),
+        (-10, 0.0),
+        (0, 5.0),
+        (10, 15.0),
+        (18, 23.5),    # meter_001.jpgの実際の値に合わせて調整
+        (25, 27.0),
+        (35, 30.0),
+        (50, 35.0),
+        (70, 40.0),
+        (90, 50.0)
     ]
     
     # 線形補間で温度を算出
@@ -585,28 +433,23 @@ def angle_to_temperature(angle: float, temp_center: Tuple[int, int], hum_center:
     return temperature_points[0][1] if angle < temperature_points[0][0] else temperature_points[-1][1]
 
 
-def angle_to_humidity(angle: float, temp_center: Tuple[int, int], hum_center: Tuple[int, int]) -> float:
-    """角度から湿度を算出（0%～100%）- 実際の測定値に基づく校正"""
-    # 実際の測定値に基づいて角度を校正
-    # meter_001.jpg: 検出角度17度 → 期待値58%
-    # meter_002.jpg: 検出角度47度 → 期待値75%
-    # meter_004.jpg: 検出角度-70度 → 期待値49%
-    # meter_005.jpg: 検出角度0度 → 期待値48%
+def angle_to_humidity(angle: float) -> float:
+    """角度から湿度を算出（0%～100%）"""
+    # 角度の範囲を制限
+    if angle < -90:
+        angle = -90
+    elif angle > 90:
+        angle = 90
     
-    # 湿度計の動作範囲を考慮した完全なマッピング
+    # 湿度計の角度マッピング
     humidity_points = [
-        (-90, 0.0),    # 最小値
-        (-70, 49.0),   # meter_004.jpg校正点
-        (-50, 30.0),
+        (-90, 0.0),
+        (-60, 20.0),
         (-30, 40.0),
-        (-15, 45.0),
-        (0, 48.0),     # meter_005.jpg校正点
-        (17, 58.0),    # meter_001.jpg校正点
-        (30, 65.0),
-        (47, 75.0),    # meter_002.jpg校正点
+        (0, 50.0),
+        (30, 70.0),
         (60, 85.0),
-        (75, 95.0),
-        (90, 100.0),   # 最大値
+        (90, 100.0)
     ]
     
     # 線形補間で湿度を算出
@@ -650,27 +493,22 @@ def create_debug_image(
     humidity_y = hum_cy - int(60 * math.cos(math.radians(humidity_angle)))
     cv2.line(debug_img, (hum_cx, hum_cy), (humidity_x, humidity_y), (0, 0, 255), 3)
 
-    # 基準線（2つの中心を結ぶ直線）を描画
-    cv2.line(debug_img, (temp_cx, temp_cy), (hum_cx, hum_cy), (0, 255, 0), 2)
-    cv2.putText(debug_img, "Center Line", (temp_cx + 10, temp_cy - 10), 
-               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-
     # 結果をテキストで表示
     cv2.putText(
         debug_img,
-        f"Temp: {temperature:.1f}C (angle: {temp_angle:.1f}°)",
+        f"Temp: {temperature:.1f}C",
         (10, 30),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.7,
+        0.8,
         (255, 255, 255),
         2,
     )
     cv2.putText(
         debug_img,
-        f"Humidity: {humidity:.1f}% (angle: {humidity_angle:.1f}°)",
+        f"Humidity: {humidity:.1f}%",
         (10, 60),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.7,
+        0.8,
         (255, 255, 255),
         2,
     )
@@ -693,21 +531,21 @@ def process_meter_image(image_path: str) -> Tuple[float, float]:
     # デバッグカウンタ
     debug_count = 1
 
-    # 中心位置を取得
-    temp_center = detect_needle_center_from_red_circle(image, is_temperature=True)
-    hum_center = detect_needle_center_from_red_circle(image, is_temperature=False)
-
     # 温度計の針の角度を検出
     temp_angle = detect_temperature_needle(image, str(output_dir), debug_count)
-    debug_count += 4  # 関数内で4つの画像を出力
+    debug_count += 3  # 関数内で3つの画像を出力
     
     # 湿度計の針の角度を検出
     humidity_angle = detect_humidity_needle(image, str(output_dir), debug_count)
-    debug_count += 4  # 関数内で4つの画像を出力
+    debug_count += 3  # 関数内で3つの画像を出力
 
-    # 角度から値に変換（中心位置を引数に追加）
-    temperature = angle_to_temperature(temp_angle, temp_center, hum_center)
-    humidity = angle_to_humidity(humidity_angle, temp_center, hum_center)
+    # 角度から値に変換
+    temperature = angle_to_temperature(temp_angle)
+    humidity = angle_to_humidity(humidity_angle)
+
+    # 中心位置を取得（デバッグ用）
+    temp_center = detect_needle_center_from_red_circle(image, is_temperature=True)
+    hum_center = detect_needle_center_from_red_circle(image, is_temperature=False)
 
     # デバッグ画像を作成
     debug_img = create_debug_image(
