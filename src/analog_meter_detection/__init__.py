@@ -89,9 +89,9 @@ def detect_needle_center_from_red_circle(image: np.ndarray, is_temperature: bool
         region_mask = np.zeros_like(red_mask)
         region_mask[0:main_cy + 30, :] = 255
     else:
-        # 湿度計は下半分
+        # 湿度計は下半分（より厳密に制限）
         region_mask = np.zeros_like(red_mask)
-        region_mask[main_cy - 30:h, :] = 255
+        region_mask[main_cy:h, :] = 255
     
     # 全ての制限を適用
     search_mask = cv2.bitwise_and(red_mask, circle_mask)
@@ -131,8 +131,8 @@ def detect_needle_center_from_red_circle(image: np.ndarray, is_temperature: bool
                     best_score = density
                     best_circle = (x, y, r)
             else:
-                # 湿度計は下半分の適切な位置
-                if y > h//2 - 30 and density > best_score:
+                # 湿度計は下半分の適切な位置（より厳密に制限）
+                if y > main_cy and density > best_score:
                     best_score = density
                     best_circle = (x, y, r)
         
@@ -151,9 +151,9 @@ def detect_needle_center_from_red_circle(image: np.ndarray, is_temperature: bool
     # フォールバック：画像の中心付近を使用
     if detected_center is None:
         if is_temperature:
-            detected_center = (w // 2, h // 3)
+            detected_center = (main_cx, main_cy - main_radius // 3)
         else:
-            detected_center = (w // 2, 2 * h // 3)
+            detected_center = (main_cx, main_cy + main_radius // 3)
     
     # デバッグ画像を作成
     if output_dir:
@@ -368,14 +368,14 @@ def detect_temperature_needle(image: np.ndarray, output_dir: str = None, debug_c
 
 
 def detect_humidity_needle(image: np.ndarray, output_dir: str = None, debug_count: int = 1) -> float:
-    """湿度計の針を検出 - 赤色円形部分から中心を検出"""
+    """湿度計の針を検出 - 赤色円形部分から中心を検出（改良版）"""
     # 湿度計の中心を赤色円形部分から検出
     hum_cx, hum_cy = detect_needle_center_from_red_circle(image, is_temperature=False, output_dir=output_dir, debug_count=debug_count)
     
     # メーター全体の円を取得
     main_cx, main_cy, main_radius = detect_main_meter_circle(image)
     
-    # 湿度計の領域を限定
+    # 湿度計の領域を限定（より厳密に下半分に制限）
     hum_radius = min(60, main_radius)
     
     # 赤色フィルタリング
@@ -401,8 +401,8 @@ def detect_humidity_needle(image: np.ndarray, output_dir: str = None, debug_coun
     circle_mask = np.zeros_like(red_mask)
     cv2.circle(circle_mask, (main_cx, main_cy), main_radius, 255, -1)
     
-    # 湿度計の範囲を制限
-    y_min = max(0, hum_cy - hum_radius)
+    # 湿度計の範囲を制限（下半分に厳密に制限）
+    y_min = max(0, main_cy)  # メーター中心より下のみ
     y_max = min(h, hum_cy + hum_radius)
     x_min = max(0, hum_cx - hum_radius)
     x_max = min(w, hum_cx + hum_radius)
@@ -414,12 +414,18 @@ def detect_humidity_needle(image: np.ndarray, output_dir: str = None, debug_coun
     # メーター全体の円の制限を適用
     hum_mask = cv2.bitwise_and(hum_mask, circle_mask)
     
+    # 下半分のみに制限するマスクを追加
+    lower_half_mask = np.zeros_like(red_mask)
+    lower_half_mask[main_cy:h, :] = 255
+    hum_mask = cv2.bitwise_and(hum_mask, lower_half_mask)
+    
     # 中心からの距離制限を追加
-    for y in range(y_min, y_max):
-        for x in range(x_min, x_max):
-            distance = math.sqrt((x - hum_cx)**2 + (y - hum_cy)**2)
-            if distance > hum_radius or distance < 10:
-                hum_mask[y, x] = 0
+    for y in range(h):
+        for x in range(w):
+            if hum_mask[y, x] > 0:
+                distance = math.sqrt((x - hum_cx)**2 + (y - hum_cy)**2)
+                if distance > hum_radius or distance < 10:
+                    hum_mask[y, x] = 0
     
     # デバッグ用の画像を保存
     if output_dir:
@@ -427,6 +433,11 @@ def detect_humidity_needle(image: np.ndarray, output_dir: str = None, debug_coun
         cv2.circle(debug_red_mask, (hum_cx, hum_cy), 5, (255, 0, 0), -1)
         cv2.circle(debug_red_mask, (hum_cx, hum_cy), hum_radius, (0, 255, 0), 2)
         cv2.rectangle(debug_red_mask, (x_min, y_min), (x_max, y_max), (0, 255, 255), 2)
+        
+        # 下半分制限を視覚化
+        cv2.line(debug_red_mask, (0, main_cy), (w, main_cy), (255, 0, 255), 2)
+        cv2.putText(debug_red_mask, "Lower half limit", (10, main_cy + 20), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 2)
         
         # 検出された赤色画素の統計情報を表示
         red_pixels = np.sum(hum_mask > 0)
@@ -518,21 +529,27 @@ def angle_to_temperature(angle: float) -> float:
 
 
 def angle_to_humidity(angle: float) -> float:
-    """角度から湿度を算出（0%～100%）"""
+    """角度から湿度を算出（0%～100%）- 実際の画像に基づいて調整"""
     # 角度の範囲を制限
     if angle < -90:
         angle = -90
     elif angle > 90:
         angle = 90
     
-    # 湿度計の角度マッピング
+    # 湿度計の角度マッピング（実際の画像に基づいて調整）
+    # meter_001.jpg等の実際の針位置を基に調整
     humidity_points = [
         (-90, 0.0),
+        (-75, 10.0),
         (-60, 20.0),
+        (-45, 30.0),
         (-30, 40.0),
-        (0, 50.0),
-        (30, 70.0),
-        (60, 85.0),
+        (-15, 50.0),
+        (0, 60.0),
+        (15, 70.0),
+        (30, 80.0),
+        (45, 90.0),
+        (60, 95.0),
         (90, 100.0)
     ]
     
