@@ -39,49 +39,20 @@ def detect_temperature_needle(image: np.ndarray, cx: int, cy: int) -> float:
     # 温度計の中心を調整
     temp_cy = cy - 80
 
-    # 赤色を検出
-    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    # 複数の手法で針を検出
+    # 1. 赤色フィルタリング + 輪郭検出
+    angle = detect_needle_by_contour(image, cx, temp_cy, is_temperature=True)
+    if angle != 0.0:
+        return angle
 
-    # より広い赤色範囲
-    lower_red1 = np.array([0, 50, 50])
-    upper_red1 = np.array([15, 255, 255])
-    lower_red2 = np.array([165, 50, 50])
-    upper_red2 = np.array([180, 255, 255])
+    # 2. 線検出アルゴリズム
+    angle = detect_needle_by_lines(image, cx, temp_cy, is_temperature=True)
+    if angle != 0.0:
+        return angle
 
-    mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
-    mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
-    red_mask = mask1 + mask2
-
-    # 温度計の範囲で赤い画素を探す
-    y_min = max(0, temp_cy - 100)
-    y_max = min(image.shape[0], temp_cy + 30)
-
-    # 輪郭検出で針を見つける
-    roi = red_mask[y_min:y_max, max(0, cx - 120) : min(image.shape[1], cx + 120)]
-    contours, _ = cv2.findContours(roi, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    if contours:
-        # 最も大きな輪郭を選択
-        largest_contour = max(contours, key=cv2.contourArea)
-
-        # 輪郭の中心を計算
-        if len(largest_contour) >= 5:
-            # 楕円フィッティング
-            try:
-                ellipse = cv2.fitEllipse(largest_contour)
-                angle = ellipse[2] - 90  # 12時方向を0度とする
-
-                # 角度を-180度から180度に正規化
-                angle = angle % 360
-                if angle > 180:
-                    angle -= 360
-
-                return angle
-            except cv2.error:
-                pass
-
-    # 基本的な検出に失敗した場合、デフォルト値を返す
-    return 0.0
+    # 3. 放射線探索アルゴリズム
+    angle = detect_needle_by_radial_search(image, cx, temp_cy, is_temperature=True)
+    return angle
 
 
 def detect_humidity_needle(image: np.ndarray, cx: int, cy: int) -> float:
@@ -89,6 +60,26 @@ def detect_humidity_needle(image: np.ndarray, cx: int, cy: int) -> float:
     # 湿度計の中心を調整
     hum_cy = cy + 80
 
+    # 複数の手法で針を検出
+    # 1. 赤色フィルタリング + 輪郭検出
+    angle = detect_needle_by_contour(image, cx, hum_cy, is_temperature=False)
+    if angle != 0.0:
+        return angle
+
+    # 2. 線検出アルゴリズム
+    angle = detect_needle_by_lines(image, cx, hum_cy, is_temperature=False)
+    if angle != 0.0:
+        return angle
+
+    # 3. 放射線探索アルゴリズム
+    angle = detect_needle_by_radial_search(image, cx, hum_cy, is_temperature=False)
+    return angle
+
+
+def detect_needle_by_contour(
+    image: np.ndarray, cx: int, cy: int, is_temperature: bool
+) -> float:
+    """輪郭検出による針検出"""
     # 赤色を検出
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
 
@@ -102,36 +93,153 @@ def detect_humidity_needle(image: np.ndarray, cx: int, cy: int) -> float:
     mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
     red_mask = mask1 + mask2
 
-    # 湿度計の範囲で赤い画素を探す
-    y_min = max(0, hum_cy - 30)
-    y_max = min(image.shape[0], hum_cy + 100)
+    # 検出範囲を設定
+    if is_temperature:
+        y_min = max(0, cy - 100)
+        y_max = min(image.shape[0], cy + 30)
+        x_min = max(0, cx - 120)
+        x_max = min(image.shape[1], cx + 120)
+    else:
+        y_min = max(0, cy - 30)
+        y_max = min(image.shape[0], cy + 100)
+        x_min = max(0, cx - 100)
+        x_max = min(image.shape[1], cx + 100)
 
     # 輪郭検出で針を見つける
-    roi = red_mask[y_min:y_max, max(0, cx - 100) : min(image.shape[1], cx + 100)]
+    roi = red_mask[y_min:y_max, x_min:x_max]
     contours, _ = cv2.findContours(roi, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     if contours:
         # 最も大きな輪郭を選択
         largest_contour = max(contours, key=cv2.contourArea)
 
-        # 輪郭の中心を計算
-        if len(largest_contour) >= 5:
-            # 楕円フィッティング
-            try:
-                ellipse = cv2.fitEllipse(largest_contour)
-                angle = ellipse[2] - 90  # 12時方向を0度とする
+        # 輪郭の面積をチェック
+        if cv2.contourArea(largest_contour) > 10:
+            # 輪郭の中心を計算
+            if len(largest_contour) >= 5:
+                # 楕円フィッティング
+                try:
+                    ellipse = cv2.fitEllipse(largest_contour)
+                    angle = ellipse[2] - 90  # 12時方向を0度とする
 
-                # 角度を-180度から180度に正規化
-                angle = angle % 360
-                if angle > 180:
-                    angle -= 360
+                    # 角度を-180度から180度に正規化
+                    angle = angle % 360
+                    if angle > 180:
+                        angle -= 360
 
-                return angle
-            except cv2.error:
-                pass
+                    return angle
+                except cv2.error:
+                    pass
 
-    # 基本的な検出に失敗した場合、デフォルト値を返す
     return 0.0
+
+
+def detect_needle_by_lines(
+    image: np.ndarray, cx: int, cy: int, is_temperature: bool
+) -> float:
+    """線検出による針検出"""
+    # 赤色を検出
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+
+    # 赤色範囲
+    lower_red1 = np.array([0, 50, 50])
+    upper_red1 = np.array([15, 255, 255])
+    lower_red2 = np.array([165, 50, 50])
+    upper_red2 = np.array([180, 255, 255])
+
+    mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
+    mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
+    red_mask = mask1 + mask2
+
+    # 検出範囲を設定
+    if is_temperature:
+        y_min = max(0, cy - 100)
+        y_max = min(image.shape[0], cy + 30)
+        x_min = max(0, cx - 120)
+        x_max = min(image.shape[1], cx + 120)
+    else:
+        y_min = max(0, cy - 30)
+        y_max = min(image.shape[0], cy + 100)
+        x_min = max(0, cx - 100)
+        x_max = min(image.shape[1], cx + 100)
+
+    # ROIを作成
+    roi = red_mask[y_min:y_max, x_min:x_max]
+
+    # エッジ検出
+    edges = cv2.Canny(roi, 50, 150)
+
+    # 線検出
+    lines = cv2.HoughLinesP(
+        edges, 1, np.pi / 180, threshold=15, minLineLength=20, maxLineGap=10
+    )
+
+    if lines is not None:
+        # 最も長い線を選択
+        longest_line = max(
+            lines,
+            key=lambda line: math.sqrt(
+                (line[0][2] - line[0][0]) ** 2 + (line[0][3] - line[0][1]) ** 2
+            ),
+        )
+
+        x1, y1, x2, y2 = longest_line[0]
+
+        # 針の角度を計算（12時を0度とする）
+        angle = math.atan2(x2 - x1, y1 - y2) * 180 / math.pi
+        return angle
+
+    return 0.0
+
+
+def detect_needle_by_radial_search(
+    image: np.ndarray, cx: int, cy: int, is_temperature: bool
+) -> float:
+    """放射線探索による針検出"""
+    # 赤色を検出
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+
+    # 赤色範囲
+    lower_red1 = np.array([0, 50, 50])
+    upper_red1 = np.array([15, 255, 255])
+    lower_red2 = np.array([165, 50, 50])
+    upper_red2 = np.array([180, 255, 255])
+
+    mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
+    mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
+    red_mask = mask1 + mask2
+
+    # 検出パラメータ
+    if is_temperature:
+        radius = 80
+    else:
+        radius = 60
+
+    # 針の角度を探す
+    best_angle = 0.0
+    max_red_pixels = 0
+
+    # 角度を5度刻みで探索
+    for angle_deg in range(-140, 141, 5):
+        angle_rad = math.radians(angle_deg)
+        red_count = 0
+
+        # 針の方向に沿って赤い画素を数える
+        for r in range(15, radius):
+            x = int(cx + r * math.sin(angle_rad))
+            y = int(cy - r * math.cos(angle_rad))
+
+            # 画像範囲内かチェック
+            if 0 <= x < image.shape[1] and 0 <= y < image.shape[0]:
+                if red_mask[y, x] > 0:
+                    red_count += 1
+
+        # 最も赤い画素が多い角度を選択
+        if red_count > max_red_pixels:
+            max_red_pixels = red_count
+            best_angle = angle_deg
+
+    return best_angle if max_red_pixels > 3 else 0.0
 
 
 def detect_needle_angle(

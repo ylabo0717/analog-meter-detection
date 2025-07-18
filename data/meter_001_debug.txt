@@ -1,5 +1,5 @@
 Center: (312, 208)
-Temperature angle: -42.91°
+Temperature angle: 0.00°
 Humidity angle: 80.89°
-Temperature: 2.5°C
+Temperature: 15.0°C
 Humidity: 83.7%
