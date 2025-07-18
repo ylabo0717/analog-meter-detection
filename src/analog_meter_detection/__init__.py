@@ -8,15 +8,18 @@ import numpy as np
 
 
 def detect_main_meter_circle(image: np.ndarray, output_dir: str = None, debug_count: int = 1) -> Tuple[int, int, int]:
-    """メーター全体の円形を検出"""
+    """メーター全体の円形を検出（改良版）"""
     # グレースケール変換
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     
     # ガウシアンブラーを適用
     blurred = cv2.GaussianBlur(gray, (9, 9), 2)
     
-    # 円検出
-    circles = cv2.HoughCircles(
+    # 複数のパラメータで円検出を試行
+    circles_results = []
+    
+    # パラメータセット1: 基本設定
+    circles1 = cv2.HoughCircles(
         blurred,
         cv2.HOUGH_GRADIENT,
         dp=1,
@@ -24,16 +27,46 @@ def detect_main_meter_circle(image: np.ndarray, output_dir: str = None, debug_co
         param1=100,
         param2=30,
         minRadius=80,
+        maxRadius=200,
+    )
+    if circles1 is not None:
+        circles_results.extend(circles1[0])
+    
+    # パラメータセット2: より厳密な設定
+    circles2 = cv2.HoughCircles(
+        blurred,
+        cv2.HOUGH_GRADIENT,
+        dp=1,
+        minDist=80,
+        param1=80,
+        param2=40,
+        minRadius=60,
         maxRadius=150,
     )
+    if circles2 is not None:
+        circles_results.extend(circles2[0])
+    
+    # パラメータセット3: より感度の高い設定
+    circles3 = cv2.HoughCircles(
+        blurred,
+        cv2.HOUGH_GRADIENT,
+        dp=1,
+        minDist=70,
+        param1=60,
+        param2=25,
+        minRadius=70,
+        maxRadius=180,
+    )
+    if circles3 is not None:
+        circles_results.extend(circles3[0])
     
     main_circle = None
-    if circles is not None:
-        circles = np.round(circles[0, :]).astype("int")
+    if circles_results:
+        circles_results = np.round(circles_results).astype("int")
         # 最も大きな円を選択
-        if len(circles) > 0:
-            max_radius = max(circles[:, 2])
-            for (x, y, r) in circles:
+        if len(circles_results) > 0:
+            max_radius = max(circles_results[:, 2])
+            for (x, y, r) in circles_results:
                 if r == max_radius:
                     main_circle = (x, y, r)
                     break
@@ -50,6 +83,13 @@ def detect_main_meter_circle(image: np.ndarray, output_dir: str = None, debug_co
         cv2.circle(debug_img, (main_circle[0], main_circle[1]), 5, (0, 255, 0), -1)
         cv2.putText(debug_img, f"Main Circle: {main_circle}", (10, 30), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        
+        # 検出された全ての円も描画
+        if circles_results is not None and len(circles_results) > 0:
+            for (x, y, r) in circles_results:
+                cv2.circle(debug_img, (x, y), r, (255, 0, 0), 2)
+                cv2.circle(debug_img, (x, y), 2, (255, 0, 0), -1)
+        
         cv2.imwrite(f"{output_dir}/debug_{debug_count:03d}_main_circle.jpg", debug_img)
     
     return main_circle
@@ -83,15 +123,16 @@ def detect_needle_center_from_red_circle(image: np.ndarray, is_temperature: bool
     circle_mask = np.zeros_like(red_mask)
     cv2.circle(circle_mask, (main_cx, main_cy), main_radius, 255, -1)
     
-    # 画像の上半分（温度計）または下半分（湿度計）に制限
+    # 画像の上半分（温度計）または下1/3（湿度計）に制限
     if is_temperature:
         # 温度計は上半分
         region_mask = np.zeros_like(red_mask)
         region_mask[0:main_cy + 30, :] = 255
     else:
-        # 湿度計は下半分（より厳密に制限）
+        # 湿度計は下1/3に制限
         region_mask = np.zeros_like(red_mask)
-        region_mask[main_cy:h, :] = 255
+        lower_third_start = main_cy + int((h - main_cy) / 3)
+        region_mask[lower_third_start:h, :] = 255
     
     # 全ての制限を適用
     search_mask = cv2.bitwise_and(red_mask, circle_mask)
@@ -131,8 +172,9 @@ def detect_needle_center_from_red_circle(image: np.ndarray, is_temperature: bool
                     best_score = density
                     best_circle = (x, y, r)
             else:
-                # 湿度計は下半分の適切な位置（より厳密に制限）
-                if y > main_cy and density > best_score:
+                # 湿度計は下1/3の適切な位置に制限
+                lower_third_start = main_cy + int((h - main_cy) / 3)
+                if y > lower_third_start and density > best_score:
                     best_score = density
                     best_circle = (x, y, r)
         
@@ -401,8 +443,10 @@ def detect_humidity_needle(image: np.ndarray, output_dir: str = None, debug_coun
     circle_mask = np.zeros_like(red_mask)
     cv2.circle(circle_mask, (main_cx, main_cy), main_radius, 255, -1)
     
-    # 湿度計の範囲を制限（下半分に厳密に制限）
-    y_min = max(0, main_cy)  # メーター中心より下のみ
+    # 湿度計の範囲を制限（下1/3に厳密に制限）
+    h, w = image.shape[:2]
+    lower_third_start = main_cy + int((h - main_cy) / 3)
+    y_min = max(0, lower_third_start)  # メーター中心から下1/3のみ
     y_max = min(h, hum_cy + hum_radius)
     x_min = max(0, hum_cx - hum_radius)
     x_max = min(w, hum_cx + hum_radius)
@@ -414,10 +458,12 @@ def detect_humidity_needle(image: np.ndarray, output_dir: str = None, debug_coun
     # メーター全体の円の制限を適用
     hum_mask = cv2.bitwise_and(hum_mask, circle_mask)
     
-    # 下半分のみに制限するマスクを追加
-    lower_half_mask = np.zeros_like(red_mask)
-    lower_half_mask[main_cy:h, :] = 255
-    hum_mask = cv2.bitwise_and(hum_mask, lower_half_mask)
+    # 下1/3のみに制限するマスクを追加
+    h, w = image.shape[:2]
+    lower_third_start = main_cy + int((h - main_cy) / 3)
+    lower_third_mask = np.zeros_like(red_mask)
+    lower_third_mask[lower_third_start:h, :] = 255
+    hum_mask = cv2.bitwise_and(hum_mask, lower_third_mask)
     
     # 中心からの距離制限を追加
     for y in range(h):
@@ -434,9 +480,11 @@ def detect_humidity_needle(image: np.ndarray, output_dir: str = None, debug_coun
         cv2.circle(debug_red_mask, (hum_cx, hum_cy), hum_radius, (0, 255, 0), 2)
         cv2.rectangle(debug_red_mask, (x_min, y_min), (x_max, y_max), (0, 255, 255), 2)
         
-        # 下半分制限を視覚化
-        cv2.line(debug_red_mask, (0, main_cy), (w, main_cy), (255, 0, 255), 2)
-        cv2.putText(debug_red_mask, "Lower half limit", (10, main_cy + 20), 
+        # 下1/3制限を視覚化
+        h, w = image.shape[:2]
+        lower_third_start = main_cy + int((h - main_cy) / 3)
+        cv2.line(debug_red_mask, (0, lower_third_start), (w, lower_third_start), (255, 0, 255), 2)
+        cv2.putText(debug_red_mask, "Lower 1/3 limit", (10, lower_third_start + 20), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 2)
         
         # 検出された赤色画素の統計情報を表示
