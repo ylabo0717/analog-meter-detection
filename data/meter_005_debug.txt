@@ -1,7 +1,7 @@
-Center: (660, 846)
-Temperature center: (660, 811)
-Humidity center: (660, 881)
-Temperature angle: -65.27°
-Humidity angle: -90.77°
-Temperature: -9.0°C
-Humidity: 0.0%
+Center: (np.int64(592), np.int64(748))
+Temperature center: (592, 718)
+Humidity center: (592, 783)
+Temperature angle: 59.42°
+Humidity angle: 0.00°
+Temperature: 30.3°C
+Humidity: 50.0%

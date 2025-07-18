@@ -1,7 +1,7 @@
 Center: (np.int64(392), np.int64(276))
 Temperature center: (392, 246)
 Humidity center: (392, 311)
-Temperature angle: 36.00°
+Temperature angle: 45.00°
 Humidity angle: 0.00°
-Temperature: 32.0°C
+Temperature: 24.0°C
 Humidity: 50.0%

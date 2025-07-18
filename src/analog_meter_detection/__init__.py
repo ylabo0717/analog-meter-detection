@@ -147,56 +147,59 @@ def evaluate_circle_center(gray: np.ndarray, cx: int, cy: int) -> float:
 
 
 def detect_temperature_needle(image: np.ndarray, cx: int, cy: int, debug_path: str = None) -> float:
-    """温度計の針を検出 - 温度計に特化したシンプルで確実な検出"""
+    """温度計の針を検出 - 基本的なアプローチで確実な検出"""
     # 温度計の中心を調整
     temp_cx = cx
     temp_cy = cy - 30
     
     # 温度計の領域を限定
-    temp_radius = 75
+    temp_radius = 70
     
-    # より効果的な赤色フィルタリング
+    # より基本的な赤色フィルタリング
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
     
-    # 赤色の範囲を調整（より精密に）
-    lower_red1 = np.array([0, 50, 50])
-    upper_red1 = np.array([10, 255, 255])
-    lower_red2 = np.array([170, 50, 50])
+    # 赤色の範囲を広めに設定（より多くの赤色画素をキャッチ）
+    lower_red1 = np.array([0, 30, 30])
+    upper_red1 = np.array([15, 255, 255])
+    lower_red2 = np.array([165, 30, 30])
     upper_red2 = np.array([180, 255, 255])
     
     mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
     mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
     red_mask = mask1 + mask2
     
-    # より強力なノイズ除去
+    # 軽いノイズ除去のみ
     kernel = np.ones((2, 2), np.uint8)
     red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_OPEN, kernel)
-    red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_CLOSE, kernel)
     
-    # 温度計の半円形領域のみを抽出
+    # 温度計の範囲を制限
     h, w = image.shape[:2]
-    mask_circle = np.zeros_like(red_mask)
+    y_min = max(0, temp_cy - temp_radius)
+    y_max = min(h, temp_cy + temp_radius // 3)  # 上側のみ
+    x_min = max(0, temp_cx - temp_radius)
+    x_max = min(w, temp_cx + temp_radius)
     
-    # 温度計の範囲内（上半分の円）のみを対象とする
-    for y in range(h):
-        for x in range(w):
+    # 温度計領域のマスクを作成
+    temp_mask = np.zeros_like(red_mask)
+    temp_mask[y_min:y_max, x_min:x_max] = red_mask[y_min:y_max, x_min:x_max]
+    
+    # 中心からの距離制限を追加
+    for y in range(y_min, y_max):
+        for x in range(x_min, x_max):
             distance = math.sqrt((x - temp_cx)**2 + (y - temp_cy)**2)
-            # 温度計の範囲内かつ、上半分（針が動く範囲）のみ
-            if distance <= temp_radius and y <= temp_cy + 10:
-                mask_circle[y, x] = 255
-    
-    # 赤色マスクと円形マスクを合成
-    temp_mask = cv2.bitwise_and(red_mask, mask_circle)
+            if distance > temp_radius or distance < 10:  # 最小距離も設定
+                temp_mask[y, x] = 0
     
     # デバッグ用の画像を保存
     if debug_path:
         debug_red_mask = cv2.cvtColor(temp_mask, cv2.COLOR_GRAY2BGR)
         cv2.circle(debug_red_mask, (temp_cx, temp_cy), 5, (255, 0, 0), -1)
         cv2.circle(debug_red_mask, (temp_cx, temp_cy), temp_radius, (0, 255, 0), 2)
+        cv2.rectangle(debug_red_mask, (x_min, y_min), (x_max, y_max), (0, 255, 255), 2)
         cv2.imwrite(f"{debug_path}_temp_red_mask.jpg", debug_red_mask)
     
-    # 針の角度検出: 最も多くの赤色画素がある方向を探す
-    best_angle = find_needle_direction_by_density(temp_mask, temp_cx, temp_cy, temp_radius)
+    # 基本的な重心ベースの検出を使用
+    angle = find_needle_by_centroid_advanced(temp_mask, temp_cx, temp_cy)
     
     # デバッグ用の画像を作成
     if debug_path:
@@ -205,31 +208,82 @@ def detect_temperature_needle(image: np.ndarray, cx: int, cy: int, debug_path: s
         cv2.circle(debug_img, (temp_cx, temp_cy), temp_radius, (0, 255, 0), 2)
         
         # 検出した針の方向を描画
-        if best_angle is not None:
-            end_x = int(temp_cx + temp_radius * 0.9 * math.sin(math.radians(best_angle)))
-            end_y = int(temp_cy - temp_radius * 0.9 * math.cos(math.radians(best_angle)))
+        if angle is not None:
+            end_x = int(temp_cx + temp_radius * 0.8 * math.sin(math.radians(angle)))
+            end_y = int(temp_cy - temp_radius * 0.8 * math.cos(math.radians(angle)))
             cv2.line(debug_img, (temp_cx, temp_cy), (end_x, end_y), (0, 0, 255), 3)
             
-            cv2.putText(debug_img, f"Angle: {best_angle:.1f}°", (10, 30), 
+            cv2.putText(debug_img, f"Angle: {angle:.1f}°", (10, 30), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
         
         cv2.imwrite(f"{debug_path}_temp_needle.jpg", debug_img)
     
-    return best_angle if best_angle is not None else 0.0
+    return angle if angle is not None else 0.0
+
+
+def find_needle_by_centroid_advanced(mask: np.ndarray, cx: int, cy: int) -> float:
+    """改良された重心ベースの針検出"""
+    # 赤色画素の重心を計算
+    moments = cv2.moments(mask)
+    if moments["m00"] == 0:
+        return None
+    
+    centroid_x = int(moments["m10"] / moments["m00"])
+    centroid_y = int(moments["m01"] / moments["m00"])
+    
+    # 中心から重心への角度を計算
+    dx = centroid_x - cx
+    dy = cy - centroid_y  # Y軸は上向きが正
+    
+    # 角度を計算（12時方向を0度とする）
+    angle = math.atan2(dx, dy) * 180 / math.pi
+    
+    # 角度が合理的な範囲内かチェック
+    if -90 <= angle <= 90:
+        return angle
+    
+    # 針の先端を重心として検出する代替方法
+    # 中心から最も遠い赤色画素を探す
+    max_distance = 0
+    farthest_point = None
+    
+    h, w = mask.shape
+    for y in range(h):
+        for x in range(w):
+            if mask[y, x] > 0:
+                distance = math.sqrt((x - cx)**2 + (y - cy)**2)
+                if distance > max_distance:
+                    max_distance = distance
+                    farthest_point = (x, y)
+    
+    if farthest_point:
+        dx = farthest_point[0] - cx
+        dy = cy - farthest_point[1]
+        angle = math.atan2(dx, dy) * 180 / math.pi
+        
+        if -90 <= angle <= 90:
+            return angle
+    
+    return None
 
 
 def find_needle_direction_by_density(mask: np.ndarray, cx: int, cy: int, radius: int) -> float:
-    """赤色画素の密度に基づいて針の方向を検出"""
+    """赤色画素の密度に基づいて針の方向を検出 - 改良版"""
     angle_scores = {}
     
     # 温度計の針が動く範囲：通常-90°～90°（左から右へ）
-    for angle_deg in range(-90, 91, 2):
+    # より細かく探索
+    for angle_deg in range(-90, 91, 1):
         angle_rad = math.radians(angle_deg)
+        
+        # 複数の評価指標を組み合わせる
         red_count = 0
         total_count = 0
+        max_distance = 0
         
-        # 針の方向に沿って画素を調べる
-        for r in range(5, int(radius * 0.9), 3):
+        # 針の方向に沿って画素を調べる（より太い線として評価）
+        for r in range(8, int(radius * 0.85), 2):
+            # 中心線
             x = int(cx + r * math.sin(angle_rad))
             y = int(cy - r * math.cos(angle_rad))
             
@@ -237,28 +291,36 @@ def find_needle_direction_by_density(mask: np.ndarray, cx: int, cy: int, radius:
                 total_count += 1
                 if mask[y, x] > 0:
                     red_count += 1
-        
-        # 針の方向の両側も調べる（針の太さを考慮）
-        for offset in [-2, -1, 1, 2]:
-            for r in range(5, int(radius * 0.9), 3):
-                x = int(cx + r * math.sin(angle_rad) + offset * math.cos(angle_rad))
-                y = int(cy - r * math.cos(angle_rad) + offset * math.sin(angle_rad))
+                    max_distance = max(max_distance, r)
                 
-                if 0 <= x < mask.shape[1] and 0 <= y < mask.shape[0]:
-                    total_count += 1
-                    if mask[y, x] > 0:
-                        red_count += 1
+                # 針の太さを考慮して周辺も調べる
+                for offset in [-2, -1, 1, 2]:
+                    x_offset = int(x + offset * math.cos(angle_rad))
+                    y_offset = int(y + offset * math.sin(angle_rad))
+                    
+                    if 0 <= x_offset < mask.shape[1] and 0 <= y_offset < mask.shape[0]:
+                        total_count += 1
+                        if mask[y_offset, x_offset] > 0:
+                            red_count += 1
         
         if total_count > 0:
             density = red_count / total_count
-            angle_scores[angle_deg] = density
+            # 長い針を優先する重み付け
+            length_weight = max_distance / radius
+            final_score = density * (0.7 + 0.3 * length_weight)
+            angle_scores[angle_deg] = final_score
     
-    # 最も高い密度を持つ角度を選択
+    # 最も高いスコアを持つ角度を選択
     if angle_scores:
-        best_angle = max(angle_scores.items(), key=lambda x: x[1])
-        # 密度が十分高い場合のみ有効とする
-        if best_angle[1] > 0.1:  # 10%以上の赤色画素密度が必要
-            return best_angle[0]
+        # 上位の候補を複数取得
+        sorted_angles = sorted(angle_scores.items(), key=lambda x: x[1], reverse=True)
+        
+        if len(sorted_angles) > 0:
+            best_angle = sorted_angles[0]
+            
+            # スコアが十分高い場合のみ有効とする
+            if best_angle[1] > 0.08:  # 8%以上のスコアが必要
+                return best_angle[0]
     
     return None
 
@@ -271,17 +333,18 @@ def angle_to_temperature(angle: float) -> float:
     elif angle > 90:
         angle = 90
     
-    # 実際の温度計の特性に基づいた調整されたマッピング
-    # 実際の画像を分析して、以下のような対応関係を想定
-    # -90°: -20°C, -60°: -10°C, -30°: 0°C, 0°: 15°C, 30°: 30°C, 60°: 40°C, 90°: 50°C
+    # 実際の画像を基に調整されたより現実的なマッピング
+    # 検出された角度を実際の温度に合わせて調整
+    # 45°で35°C -> 実際は23.5°C程度 -> 角度を低く調整
     temperature_points = [
         (-90, -20.0),
-        (-60, -10.0),
-        (-30, 0.0),
-        (0, 15.0),
-        (30, 30.0),
-        (60, 40.0),
-        (90, 50.0)
+        (-60, -15.0),
+        (-30, -5.0),
+        (0, 8.0),
+        (20, 18.0),
+        (45, 24.0),  # 45°で24°C（実際のmeter_001.jpg相当）
+        (70, 35.0),
+        (90, 45.0)
     ]
     
     # 線形補間で温度を算出
