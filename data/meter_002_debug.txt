@@ -1,0 +1,5 @@
+Center: (172, 242)
+Temperature angle: 90.00°
+Humidity angle: 90.00°
+Temperature: 41.2°C
+Humidity: 87.5%

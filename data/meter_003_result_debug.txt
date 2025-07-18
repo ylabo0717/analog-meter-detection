@@ -1,0 +1,5 @@
+Center: (302, 464)
+Temperature angle: 123.66°
+Humidity angle: 116.46°
+Temperature: 45.9°C
+Humidity: 91.6%

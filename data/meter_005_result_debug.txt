@@ -1,0 +1,5 @@
+Center: (772, 224)
+Temperature angle: 0.00°
+Humidity angle: 0.00°
+Temperature: 15.0°C
+Humidity: 50.0%
