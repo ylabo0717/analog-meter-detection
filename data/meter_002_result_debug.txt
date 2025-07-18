@@ -1,5 +1,0 @@
-Center: (380, 258)
-Temperature angle: 116.49°
-Humidity angle: 134.65°
-Temperature: 44.1°C
-Humidity: 98.1%

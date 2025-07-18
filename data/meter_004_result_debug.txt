@@ -1,5 +1,0 @@
-Center: (52, 198)
-Temperature angle: 0.00°
-Humidity angle: 162.80°
-Temperature: 15.0°C
-Humidity: 100.0%

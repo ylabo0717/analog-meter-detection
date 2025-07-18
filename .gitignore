@@ -214,3 +214,6 @@ data/*_temp_*.jpg
 data/*_hum_*.jpg
 data/*_center.jpg
 data/*_circles.jpg
+
+# Output directory
+output/
