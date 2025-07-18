@@ -34,119 +34,116 @@ def detect_meter_center(image: np.ndarray) -> Tuple[int, int]:
     return w // 2, h // 2
 
 
-def detect_temperature_needle(image: np.ndarray, cx: int, cy: int) -> float:
-    """温度計の針を検出"""
-    # 温度計の中心を調整
-    temp_cy = cy - 80
-
-    # 赤色を検出
-    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-
-    # より広い赤色範囲
-    lower_red1 = np.array([0, 50, 50])
-    upper_red1 = np.array([15, 255, 255])
-    lower_red2 = np.array([165, 50, 50])
-    upper_red2 = np.array([180, 255, 255])
-
-    mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
-    mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
-    red_mask = mask1 + mask2
-
-    # 温度計の範囲で赤い画素を探す
-    y_min = max(0, temp_cy - 100)
-    y_max = min(image.shape[0], temp_cy + 30)
-
-    # 輪郭検出で針を見つける
-    roi = red_mask[y_min:y_max, max(0, cx - 120) : min(image.shape[1], cx + 120)]
-    contours, _ = cv2.findContours(roi, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    if contours:
-        # 最も大きな輪郭を選択
-        largest_contour = max(contours, key=cv2.contourArea)
-
-        # 輪郭の中心を計算
-        if len(largest_contour) >= 5:
-            # 楕円フィッティング
-            try:
-                ellipse = cv2.fitEllipse(largest_contour)
-                angle = ellipse[2] - 90  # 12時方向を0度とする
-
-                # 角度を-180度から180度に正規化
-                angle = angle % 360
-                if angle > 180:
-                    angle -= 360
-
-                return angle
-            except cv2.error:
-                pass
-
-    # 基本的な検出に失敗した場合、デフォルト値を返す
-    return 0.0
-
-
-def detect_humidity_needle(image: np.ndarray, cx: int, cy: int) -> float:
-    """湿度計の針を検出"""
-    # 湿度計の中心を調整
-    hum_cy = cy + 80
-
-    # 赤色を検出
-    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-
-    # より広い赤色範囲
-    lower_red1 = np.array([0, 50, 50])
-    upper_red1 = np.array([15, 255, 255])
-    lower_red2 = np.array([165, 50, 50])
-    upper_red2 = np.array([180, 255, 255])
-
-    mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
-    mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
-    red_mask = mask1 + mask2
-
-    # 湿度計の範囲で赤い画素を探す
-    y_min = max(0, hum_cy - 30)
-    y_max = min(image.shape[0], hum_cy + 100)
-
-    # 輪郭検出で針を見つける
-    roi = red_mask[y_min:y_max, max(0, cx - 100) : min(image.shape[1], cx + 100)]
-    contours, _ = cv2.findContours(roi, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    if contours:
-        # 最も大きな輪郭を選択
-        largest_contour = max(contours, key=cv2.contourArea)
-
-        # 輪郭の中心を計算
-        if len(largest_contour) >= 5:
-            # 楕円フィッティング
-            try:
-                ellipse = cv2.fitEllipse(largest_contour)
-                angle = ellipse[2] - 90  # 12時方向を0度とする
-
-                # 角度を-180度から180度に正規化
-                angle = angle % 360
-                if angle > 180:
-                    angle -= 360
-
-                return angle
-            except cv2.error:
-                pass
-
-    # 基本的な検出に失敗した場合、デフォルト値を返す
-    return 0.0
-
-
 def detect_needle_angle(
     image: np.ndarray, center: Tuple[int, int], is_temperature: bool = True
 ) -> float:
     """針の角度を検出する（度単位）"""
     cx, cy = center
 
-    # 実際の画像を分析して最適な針検出を行う
+    # 針の検出を赤色フィルタリングで行う
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+
+    # 赤色の範囲を定義
+    lower_red1 = np.array([0, 100, 100])
+    upper_red1 = np.array([10, 255, 255])
+    lower_red2 = np.array([170, 100, 100])
+    upper_red2 = np.array([180, 255, 255])
+
+    mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
+    mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
+    red_mask = mask1 + mask2
+
+    # 針の検出範囲を設定
     if is_temperature:
-        # 温度計の針検出（画像の上半分）
-        return detect_temperature_needle(image, cx, cy)
+        # 温度計（上半分）
+        y_min = max(0, cy - 120)
+        y_max = cy + 10
+        radius = 100
     else:
-        # 湿度計の針検出（画像の下半分）
-        return detect_humidity_needle(image, cx, cy)
+        # 湿度計（下半分）
+        y_min = cy - 10
+        y_max = min(image.shape[0], cy + 120)
+        radius = 80
+
+    # 針の角度を探す
+    best_angle = 0.0
+    max_red_pixels = 0
+
+    # 角度を10度刻みで探索
+    for angle_deg in range(-150, 151, 10):
+        angle_rad = math.radians(angle_deg)
+        red_count = 0
+
+        # 針の方向に沿って赤い画素を数える
+        for r in range(20, radius):
+            x = int(cx + r * math.sin(angle_rad))
+            y = int(cy - r * math.cos(angle_rad))
+
+            # 画像範囲内で検出範囲内かチェック
+            if (
+                0 <= x < image.shape[1]
+                and y_min <= y <= y_max
+                and 0 <= y < image.shape[0]
+            ):
+                if red_mask[y, x] > 0:
+                    red_count += 1
+
+        # 最も赤い画素が多い角度を選択
+        if red_count > max_red_pixels:
+            max_red_pixels = red_count
+            best_angle = angle_deg
+
+    return best_angle
+
+
+def find_needle_by_red_detection(
+    image: np.ndarray, center: Tuple[int, int], radius: int, is_temperature: bool
+) -> float:
+    """赤い針を検出する"""
+    cx, cy = center
+    
+    # より精密な赤色検出
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    
+    # 赤色の範囲を調整
+    lower_red1 = np.array([0, 120, 120])
+    upper_red1 = np.array([10, 255, 255])
+    lower_red2 = np.array([170, 120, 120])
+    upper_red2 = np.array([180, 255, 255])
+    
+    mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
+    mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
+    red_mask = mask1 + mask2
+    
+    # 針の角度を探す
+    best_angle = 0.0
+    max_red_pixels = 0
+    
+    # 角度を5度刻みで探索（より精密）
+    for angle_deg in range(-140, 141, 5):
+        angle_rad = math.radians(angle_deg)
+        red_count = 0
+        total_points = 0
+        
+        # 針の方向に沿って赤い画素を数える
+        for r in range(15, radius):
+            x = int(cx + r * math.sin(angle_rad))
+            y = int(cy - r * math.cos(angle_rad))
+            
+            # 画像範囲内かチェック
+            if (0 <= x < image.shape[1] and 0 <= y < image.shape[0]):
+                total_points += 1
+                if red_mask[y, x] > 0:
+                    red_count += 1
+        
+        # 赤い画素の密度を計算
+        if total_points > 0:
+            density = red_count / total_points
+            if density > 0.1 and red_count > max_red_pixels:  # 密度10%以上
+                max_red_pixels = red_count
+                best_angle = angle_deg
+    
+    return best_angle
 
 
 def angle_to_temperature(angle: float) -> float:
