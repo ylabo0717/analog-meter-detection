@@ -1,5 +1,7 @@
-Center: (302, 466)
-Temperature angle: 13.12°
-Humidity angle: -59.13°
-Temperature: 18.8°C
-Humidity: 25.4%
+Center: (354, 400)
+Temperature center: (354, 365)
+Humidity center: (354, 435)
+Temperature angle: 63.00°
+Humidity angle: -102.00°
+Temperature: 38.0°C
+Humidity: 0.0%

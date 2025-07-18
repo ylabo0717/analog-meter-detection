@@ -279,10 +279,11 @@ def detect_needle_by_radial_search(
     # 赤色を検出
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
 
-    # より幅広い赤色範囲を設定
-    lower_red1 = np.array([0, 120, 70])
+    # より効果的な赤色範囲を設定
+    # 複数の赤色範囲を組み合わせて検出精度を向上
+    lower_red1 = np.array([0, 100, 100])
     upper_red1 = np.array([10, 255, 255])
-    lower_red2 = np.array([170, 120, 70])
+    lower_red2 = np.array([160, 100, 100])
     upper_red2 = np.array([180, 255, 255])
 
     mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
@@ -296,15 +297,14 @@ def detect_needle_by_radial_search(
 
     # 検出パラメータ
     if is_temperature:
-        radius = 80
-        start_radius = 10
+        radius = 70
+        start_radius = 5
     else:
-        radius = 60
-        start_radius = 8
+        radius = 55
+        start_radius = 5
 
     # 針の角度を探す
-    best_angle = 0.0
-    max_red_pixels = 0
+    angle_scores = {}
     
     # デバッグ用の画像を作成
     if debug_path:
@@ -312,10 +312,11 @@ def detect_needle_by_radial_search(
         cv2.circle(debug_img, (cx, cy), 5, (255, 0, 0), -1)
         cv2.circle(debug_img, (cx, cy), radius, (0, 255, 0), 2)
 
-    # 角度を2度刻みで探索（より細かく探索）
-    for angle_deg in range(-140, 141, 2):
+    # 角度を1度刻みで細かく探索
+    for angle_deg in range(-120, 121, 1):
         angle_rad = math.radians(angle_deg)
         red_count = 0
+        total_pixels = 0
 
         # 針の方向に沿って赤い画素を数える
         for r in range(start_radius, radius):
@@ -324,32 +325,42 @@ def detect_needle_by_radial_search(
 
             # 画像範囲内かチェック
             if 0 <= x < image.shape[1] and 0 <= y < image.shape[0]:
+                total_pixels += 1
                 if red_mask[y, x] > 0:
                     red_count += 1
-                    
-        # 最も赤い画素が多い角度を選択
-        if red_count > max_red_pixels:
-            max_red_pixels = red_count
-            best_angle = angle_deg
 
-    # デバッグ用の画像を保存
-    if debug_path:
-        # 検出した針の方向を描画
-        if best_angle != 0:
-            end_x = int(cx + radius * math.sin(math.radians(best_angle)))
-            end_y = int(cy - radius * math.cos(math.radians(best_angle)))
-            cv2.line(debug_img, (cx, cy), (end_x, end_y), (0, 0, 255), 3)
-        
-        # 検出した赤い画素数を表示
-        cv2.putText(debug_img, f"Red pixels: {max_red_pixels}", (10, 30), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-        cv2.putText(debug_img, f"Angle: {best_angle:.1f}°", (10, 60), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-        
-        meter_type = "temp" if is_temperature else "hum"
-        cv2.imwrite(f"{debug_path}_{meter_type}_radial.jpg", debug_img)
+        # 赤い画素の割合を計算
+        if total_pixels > 0:
+            red_ratio = red_count / total_pixels
+            angle_scores[angle_deg] = red_ratio
 
-    return best_angle if max_red_pixels > 5 else 0.0
+    # 最も良いスコアの角度を選択
+    if angle_scores:
+        best_angle = max(angle_scores.items(), key=lambda x: x[1])
+        
+        # デバッグ用の画像を保存
+        if debug_path:
+            # 検出した針の方向を描画
+            if best_angle[1] > 0:
+                end_x = int(cx + radius * math.sin(math.radians(best_angle[0])))
+                end_y = int(cy - radius * math.cos(math.radians(best_angle[0])))
+                cv2.line(debug_img, (cx, cy), (end_x, end_y), (0, 0, 255), 3)
+            
+            # 検出した赤い画素の割合を表示
+            cv2.putText(debug_img, f"Red ratio: {best_angle[1]:.3f}", (10, 30), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+            cv2.putText(debug_img, f"Angle: {best_angle[0]:.1f}°", (10, 60), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+            
+            meter_type = "temp" if is_temperature else "hum"
+            cv2.imwrite(f"{debug_path}_{meter_type}_radial.jpg", debug_img)
+
+        # 閾値を超えた場合のみ角度を返す
+        if best_angle[1] > 0.15:  # 15%以上の赤い画素が必要
+            return best_angle[0]
+
+    # 検出できなかった場合は0を返す
+    return 0.0
 
 
 def detect_needle_angle(
@@ -369,46 +380,72 @@ def detect_needle_angle(
 
 def angle_to_temperature(angle: float) -> float:
     """角度から温度を算出（-20℃～50℃）"""
-    # 実際の画像に基づいて角度マッピングを調整
-    # 温度計の針の位置を見ると、23.5°Cは約60度程度の位置にある
-    # 一般的な温度計の角度範囲を考慮して調整
+    # 複数の画像の期待値と検出角度の関係を分析して、より一般的なマッピングを作成
     
-    # 針の角度が正しく読み取れていない可能性があるため、角度の解釈を見直す
-    # 実際の画像では、針が右上方向（約45度付近）を指している場合が23.5°C
-    
-    # 角度の範囲を調整: -90度～90度の範囲で-20℃～50℃にマッピング
+    # 角度の範囲を制限
     if angle < -90:
         angle = -90
     elif angle > 90:
         angle = 90
-
-    # 角度を0～1の範囲に正規化
-    normalized_angle = (angle + 90) / 180
-
-    # 温度範囲（-20℃～50℃）にマッピング
-    temperature = -20 + normalized_angle * 70
-
-    return temperature
+    
+    # 一般的な温度計の特性を考慮したマッピング
+    # -90°: -20°C, -45°: 0°C, 0°: 15°C, 45°: 30°C, 90°: 50°C
+    temperature_points = [
+        (-90, -20.0),
+        (-45, 0.0),
+        (0, 15.0),
+        (45, 30.0),
+        (90, 50.0)
+    ]
+    
+    # 線形補間で温度を算出
+    for i in range(len(temperature_points) - 1):
+        angle1, temp1 = temperature_points[i]
+        angle2, temp2 = temperature_points[i + 1]
+        
+        if angle1 <= angle <= angle2:
+            # 線形補間
+            ratio = (angle - angle1) / (angle2 - angle1)
+            temperature = temp1 + ratio * (temp2 - temp1)
+            return temperature
+    
+    # 範囲外の場合は境界値を返す
+    return temperature_points[0][1] if angle < temperature_points[0][0] else temperature_points[-1][1]
 
 
 def angle_to_humidity(angle: float) -> float:
     """角度から湿度を算出（0%～100%）"""
-    # 実際の画像に基づいて角度マッピングを調整
-    # 湿度計の針の位置を見ると、58%は約60度程度の位置にある
+    # 複数の画像の期待値と検出角度の関係を分析して、より一般的なマッピングを作成
     
-    # 角度の範囲を調整: -90度～90度の範囲で0%～100%にマッピング
+    # 角度の範囲を制限
     if angle < -90:
         angle = -90
-    elif angle > 90:
-        angle = 90
-
-    # 角度を0～1の範囲に正規化
-    normalized_angle = (angle + 90) / 180
-
-    # 湿度範囲（0%～100%）にマッピング
-    humidity = normalized_angle * 100
-
-    return humidity
+    elif angle > 120:
+        angle = 120
+    
+    # 一般的な湿度計の特性を考慮したマッピング
+    # -90°: 0%, -45°: 25%, 0°: 50%, 60°: 75%, 120°: 100%
+    humidity_points = [
+        (-90, 0.0),
+        (-45, 25.0),
+        (0, 50.0),
+        (60, 75.0),
+        (120, 100.0)
+    ]
+    
+    # 線形補間で湿度を算出
+    for i in range(len(humidity_points) - 1):
+        angle1, hum1 = humidity_points[i]
+        angle2, hum2 = humidity_points[i + 1]
+        
+        if angle1 <= angle <= angle2:
+            # 線形補間
+            ratio = (angle - angle1) / (angle2 - angle1)
+            humidity = hum1 + ratio * (hum2 - hum1)
+            return humidity
+    
+    # 範囲外の場合は境界値を返す
+    return humidity_points[0][1] if angle < humidity_points[0][0] else humidity_points[-1][1]
 
 
 def create_debug_image(

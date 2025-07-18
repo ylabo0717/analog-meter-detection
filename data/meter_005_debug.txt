@@ -1,5 +1,7 @@
-Center: (930, 288)
-Temperature angle: 0.00°
-Humidity angle: 0.00°
-Temperature: 15.0°C
-Humidity: 50.0%
+Center: (660, 846)
+Temperature center: (660, 811)
+Humidity center: (660, 881)
+Temperature angle: -65.27°
+Humidity angle: -90.77°
+Temperature: -9.0°C
+Humidity: 0.0%
